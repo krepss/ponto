@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-# Configuração da página
+# Configuração da página do Streamlit
 st.set_page_config(
     page_title="Análise de Banco de Horas",
     page_icon="⏱️",
@@ -9,25 +9,27 @@ st.set_page_config(
 )
 
 st.title("⏱️ Analisador de Banco de Horas")
-st.markdown("Sistema configurado especificamente para o modelo de relatório da sua empresa.")
+st.markdown("Sistema inteligente configurado para ler relatórios de controle de ponto e banco de horas.")
 
-# Função robusta para converter qualquer formato de hora/texto para decimal
+# Função robusta para converter formato de hora (ex: 02:30, -05:56, +00:13) para número decimal
 def limpar_e_converter_hora(valor):
     if pd.isna(valor):
         return 0.0
     
-    # Transforma em string e limpa espaços
+    # Remove espaços e padroniza o texto
     texto = str(valor).strip().replace(' ', '')
     
-    if not texto or texto == '0' or texto == '0.0' or texto == '0,0':
+    if not texto or texto in ['0', '0.0', '0,0', '00:00']:
         return 0.0
     
     negativo = False
     if texto.startswith('-'):
         negativo = True
         texto = texto.replace('-', '')
+    elif texto.startswith('+'):
+        texto = texto.replace('+', '')
         
-    # Cenário 1: Formato de Relógio (HH:MM ou HH:MM:SS)
+    # Formato de Relógio do Ponto (HH:MM ou HH:MM:SS)
     if ':' in texto:
         try:
             partes = texto.split(':')
@@ -38,7 +40,7 @@ def limpar_e_converter_hora(valor):
         except:
             return 0.0
             
-    # Cenário 2: Formato Decimal com vírgula (ex: 5,50 ou -2,25)
+    # Formato Decimal com vírgula padrão nacional (ex: 5,50)
     if ',' in texto:
         texto = texto.replace(',', '.')
         
@@ -49,7 +51,7 @@ def limpar_e_converter_hora(valor):
         return 0.0
 
 # 1. Área de Upload
-uploaded_file = st.file_uploader("Arraste e solte o arquivo do banco de horas aqui:", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Arraste e solte seu relatório de horas aqui (Excel ou CSV):", type=["csv", "xlsx"])
 
 if uploaded_file is not None:
     try:
@@ -59,85 +61,92 @@ if uploaded_file is not None:
         else:
             df = pd.read_excel(uploaded_file, skiprows=4)
             
-        # Remove espaços invisíveis dos cabeçalhos
+        # Limpa os espaços em branco extras das pontas dos nomes das colunas
         df.columns = df.columns.str.strip()
+        colunas_no_df = df.columns.tolist()
         
-        # Identifica a coluna do Nome do colaborador
-        col_nome = 'Nome' if 'Nome' in df.columns else df.columns[0]
+        # Mapeamento Dinâmico e Inteligente das Colunas Encontradas
+        col_nome = next((c for c in colunas_no_df if c.lower() in ['nome', 'colaborador', 'funcionario', 'funcionário']), colunas_no_df[0])
+        col_saldo_atual = next((c for c in colunas_no_df if c.lower() in ['total banco', 'saldo atual', 'saldo final', 'saldo']), None)
+        col_saldo_periodo = next((c for c in colunas_no_df if c.lower() in ['saldo do período', 'saldo do periodo', 'saldo período', 'saldo periodo']), None)
         
-        # Limpeza: Remove linhas vazias ou totalizadores
+        # Se não encontrar nenhuma palavra-chave, assume a última coluna do arquivo como o saldo consolidado
+        if not col_saldo_atual:
+            col_saldo_atual = colunas_no_df[-1]
+            
+        # Limpeza: Remove linhas vazias e evita que linhas de totais quebrem o cálculo
         df = df.dropna(subset=[col_nome])
         df = df[~df[col_nome].astype(str).str.contains('TOTAL', case=False, na=False)]
         
-        # Cria cópias das colunas originais formatadas para exibição bonita na tabela
-        colunas_horas = ['Saldo Anterior', 'Crédito Período', 'Débito Período', 'Saldo Atual']
+        # Cria colunas numéricas de controle interno para ordenar e gerar os gráficos
+        col_saldo_atual_num = f"{col_saldo_atual}_Num"
+        df[col_saldo_atual_num] = df[col_saldo_atual].apply(limpar_e_converter_hora)
         
-        # Aplica a conversão mágica coluna por coluna
-        for col in colunas_horas:
-            if col in df.columns:
-                # Mantém o texto original para mostrar na tabela, mas cria uma versão numérica para os cálculos/gráficos
-                df[f'{col}_Num'] = df[col].apply(limpar_e_converter_hora)
-            else:
-                df[f'{col}_Num'] = 0.0
-                df[col] = "00:00"
+        if col_saldo_periodo and col_saldo_periodo in df.columns:
+            col_saldo_periodo_num = f"{col_saldo_periodo}_Num"
+            df[col_saldo_periodo_num] = df[col_saldo_periodo].apply(limpar_e_converter_hora)
 
-        st.success(f"✅ Sucesso! {len(df)} colaboradores processados.")
+        st.success(f"✅ Sucesso! {len(df)} colaboradores processados com base na coluna de saldo encontrada: '{col_saldo_atual}'.")
 
-        # Separando os Saldos Atuais com base nas novas colunas numéricas calculadas
-        positivos = df[df['Saldo Atual..._Num' if 'Saldo Atual_Num' in df.columns else 'Saldo Atual_Num'] > 0].sort_values(by='Saldo Atual_Num', ascending=False)
-        negativos = df[df['Saldo Atual_Num'] < 0].sort_values(by='Saldo Atual_Num', ascending=True)
+        # Separando os saldos com base no número decimal calculado
+        positivos = df[df[col_saldo_atual_num] > 0].sort_values(by=col_saldo_atual_num, ascending=False)
+        negativos = df[df[col_saldo_atual_num] < 0].sort_values(by=col_saldo_atual_num, ascending=True)
 
-        # --- Bloco 1: Métricas de Impacto ---
-        st.subheader("📊 Resumo do Banco de Horas Atual")
+        # --- Bloco 1: Indicadores e Métricas ---
+        st.subheader("📊 Resumo Consolidado do Banco de Horas")
         m1, m2, m3, m4 = st.columns(4)
         
         m1.metric("Total de Colaboradores", len(df))
         m2.metric("Saldos Positivos (Crédito)", len(positivos), f"📈 {len(positivos)} pessoas")
         m3.metric("Saldos Negativos (Dívida)", len(negativos), f"📉 {len(negativos)} pessoas", delta_color="inverse")
-        m4.metric("Balanço Geral da Empresa", f"{df['Saldo Atual_Num'].sum():.2f}h")
+        
+        # Calcula o saldo geral líquido de toda a empresa
+        saldo_geral_empresa = df[col_saldo_atual_num].sum()
+        m4.metric("Balanço Geral da Empresa", f"{saldo_geral_empresa:.2f}h")
 
         st.markdown("---")
 
-        # --- Bloco 2: Gráficos Visuais ---
+        # --- Bloco 2: Gráficos Visuais de Barras ---
         col_graf1, col_graf2 = st.columns(2)
         
         with col_graf1:
             st.subheader("📈 Top Colaboradores com Mais Horas Positivas")
             if not positivos.empty:
                 df_pos_grafico = positivos.head(10).set_index(col_nome)
-                st.bar_chart(df_pos_grafico['Saldo Atual_Num'], horizontal=True)
+                st.bar_chart(df_pos_grafico[col_saldo_atual_num], horizontal=True)
             else:
-                st.info("Nenhum colaborador com saldo positivo.")
+                st.info("Nenhum colaborador com saldo positivo no momento.")
                 
         with col_graf2:
             st.subheader("📉 Top Colaboradores com Mais Horas Negativas")
             if not negativos.empty:
-                df_neg_grafico = negativos.head(10).set_index(col_nome)
-                st.bar_chart(df_neg_grafico['Saldo Atual_Num'], horizontal=True)
+                # Ordena para exibir o gráfico de forma harmônica (do mais negativo para o menos negativo)
+                df_neg_grafico = negativos.head(10).sort_values(by=col_saldo_atual_num, ascending=False).set_index(col_nome)
+                st.bar_chart(df_neg_grafico[col_saldo_atual_num], horizontal=True)
             else:
-                st.info("Nenhum colaborador com saldo negativo.")
+                st.info("Nenhum colaborador com saldo negativo no momento.")
 
         st.markdown("---")
 
-        # --- Bloco 3: Listas Detalhadas ---
+        # --- Bloco 3: Tabelas de Dados Organizadas por Abas ---
         tab_pos, tab_neg, tab_geral = st.tabs(["🟢 Credores (Positivos)", "🔴 Devedores (Negativos)", "📋 Todos os Dados"])
         
-        # Colunas que vamos exibir na tabela final (exibindo os valores originais bonitinhos do seu arquivo)
-        colunas_exibicao = [col_nome] + colunas_horas
+        # Filtra para exibir apenas as colunas originais limpas (esconde as colunas numéricas de controle interno)
+        colunas_exibicao = [c for c in colunas_no_df if not c.endswith('_Num')]
         
         with tab_pos:
-            st.markdown("### Colaboradores com horas a favor")
+            st.markdown(f"### Lista de Colaboradores com Horas a Favor (Coluna de referência: {col_saldo_atual})")
             st.dataframe(positivos[colunas_exibicao], use_container_width=True)
             
         with tab_neg:
-            st.markdown("### Colaboradores que devem horas")
+            st.markdown(f"### Lista de Colaboradores que Devem Horas (Coluna de referência: {col_saldo_atual})")
             st.dataframe(negativos[colunas_exibicao], use_container_width=True)
             
         with tab_geral:
-            st.markdown("### Relatório Consolidado Limpo")
+            st.markdown("### Relatório Completo Lido do Arquivo")
             st.dataframe(df[colunas_exibicao], use_container_width=True)
 
     except Exception as e:
         st.error(f"Erro inesperado no processamento: {e}")
 else:
-    st.info("💡 Aguardando o upload do arquivo para gerar os insights.")
+    st.info("💡 Aguardando o upload do seu relatório de ponto para gerar a análise.")
